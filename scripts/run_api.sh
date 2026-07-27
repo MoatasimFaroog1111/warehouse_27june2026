@@ -13,17 +13,15 @@ cd "${ROOT_DIR}"
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
-if [[ -f ".env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source ".env"
-  set +a
-fi
-
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"
+
+ENV_FILE_ARGS=()
+if [[ -f ".env" ]]; then
+  ENV_FILE_ARGS=(--env-file .env)
+fi
 
 exec python -m uvicorn app.main:app \
   --host "$HOST" \
@@ -32,4 +30,5 @@ exec python -m uvicorn app.main:app \
   --log-level "${LOG_LEVEL,,}" \
   --proxy-headers \
   --forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-127.0.0.1}" \
-  --no-access-log
+  --no-access-log \
+  "${ENV_FILE_ARGS[@]}"
