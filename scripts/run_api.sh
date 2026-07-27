@@ -10,5 +10,26 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
 fi
 
 cd "${ROOT_DIR}"
+# shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
-exec uvicorn app.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-8000}"
+
+if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
+WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"
+
+exec python -m uvicorn app.main:app \
+  --host "$HOST" \
+  --port "$PORT" \
+  --workers "$WEB_CONCURRENCY" \
+  --log-level "${LOG_LEVEL,,}" \
+  --proxy-headers \
+  --forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-127.0.0.1}" \
+  --no-access-log
