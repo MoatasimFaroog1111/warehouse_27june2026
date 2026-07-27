@@ -1,0 +1,1 @@
+"""Warehouse vision API package."""
