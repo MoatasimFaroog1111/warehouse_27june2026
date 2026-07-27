@@ -1,29 +1,44 @@
 # warehouse_27june2026
 
-Warehouse object-detection API powered by GroundingDINO.
+Production-oriented warehouse object-detection API powered by GroundingDINO.
 
-## What the integration provides
+## Current capabilities
 
-- `GET /health` checks the local GroundingDINO configuration and model weights.
-- `POST /detect` accepts an image and an open-vocabulary prompt.
-- The response contains the object count, labels, confidence scores, pixel coordinates, and the annotated image as Base64 JPEG.
-- The model is loaded once and reused between requests.
-- CPU mode is selected automatically when CUDA is unavailable.
+- Open-vocabulary detection through `POST /detect`.
+- Counts grouped by detected label.
+- Average confidence grouped by label.
+- Pixel coordinates in `xyxy` format.
+- Annotated results saved as JPEG files and returned through short result URLs.
+- Optional Base64 image output for compatibility.
+- Optional `X-API-Key` protection shown in Swagger's **Authorize** button.
+- Upload-size, image-pixel, prompt-length, and prompt-term limits.
+- Real image decoding and normalization before inference.
+- One reusable model instance with bounded inference concurrency.
+- JSON application logs with request IDs and processing times.
+- Liveness, readiness, and health endpoints.
+- Automatic expiration and cleanup of saved result images.
+- CPU fallback when CUDA is unavailable.
 
 ## Project layout
 
 ```text
 app/
-  main.py                 FastAPI endpoints
+  config.py               Environment configuration
   grounding_service.py    GroundingDINO model wrapper
+  logging_config.py       JSON logging
+  main.py                 FastAPI endpoints and middleware
+  schemas.py              Response models
+  storage.py              Result-image storage and cleanup
 scripts/
-  run_api.sh              API launcher
+  run_api.sh              Production-style launcher
   test_api.py             End-to-end smoke test
 GroundingDINO/             Local upstream clone, ignored by Git
+runtime/results/           Generated images, ignored by Git
 requirements-api.txt
+.env.example
 ```
 
-## Run in the current Codespace
+## Update and install
 
 From `/workspaces/warehouse_27june2026`:
 
@@ -31,18 +46,106 @@ From `/workspaces/warehouse_27june2026`:
 git pull origin main
 source GroundingDINO/.venv/bin/activate
 python -m pip install -r requirements-api.txt
+```
+
+Copy the configuration template:
+
+```bash
+cp -n .env.example .env
+```
+
+For Codespaces development, an empty `API_KEY` keeps the API open. Before exposing the API publicly, set a strong secret:
+
+```text
+API_KEY=replace-with-a-long-random-secret
+APP_ENV=production
+```
+
+## Run
+
+```bash
 bash scripts/run_api.sh
 ```
 
-The API will be available on port `8000`:
+The launcher activates `GroundingDINO/.venv`, loads `.env`, and starts one Uvicorn worker. Keep `WEB_CONCURRENCY=1` unless the machine has enough memory to load a separate model in every worker.
 
-- API documentation: `/docs`
-- Health check: `/health`
-- Detection endpoint: `/detect`
+Codespaces forwards port `8000`. Open the forwarded URL and append:
 
-## Test with the GroundingDINO sample image
+```text
+/docs
+```
 
-Open a second terminal in the same Codespace:
+## Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/live` | Process liveness |
+| `GET` | `/ready` | Dependency readiness; returns 503 when model files are missing |
+| `GET` | `/health` | Detailed health and model status |
+| `POST` | `/detect` | Run object detection |
+| `GET` | `/results/{result_id}` | Download an annotated result |
+| `GET` | `/docs` | Swagger UI |
+
+When `API_KEY` is configured, click **Authorize** in Swagger and enter the key. Programmatic clients must send:
+
+```text
+X-API-Key: your-secret
+```
+
+## Detection request
+
+```bash
+curl -X POST http://127.0.0.1:8000/detect \
+  -H 'X-API-Key: your-secret' \
+  -F 'image=@GroundingDINO/.asset/cat_dog.jpeg' \
+  -F 'prompt=cat . dog .' \
+  -F 'box_threshold=0.35' \
+  -F 'text_threshold=0.25' \
+  -F 'include_image_base64=false'
+```
+
+Example response structure:
+
+```json
+{
+  "request_id": "7cb2fdfe50e84bdb9a230941fe7aeeca",
+  "filename": "cat_dog.jpeg",
+  "prompt": "cat . dog .",
+  "device": "cpu",
+  "processing_time_ms": 25137.42,
+  "count": 2,
+  "counts_by_label": {
+    "cat": 1,
+    "dog": 1
+  },
+  "average_confidence_by_label": {
+    "cat": 0.8206,
+    "dog": 0.5658
+  },
+  "image": {
+    "width": 1200,
+    "height": 900,
+    "format": "JPEG"
+  },
+  "detections": [
+    {
+      "label": "cat",
+      "confidence": 0.8206,
+      "box_xyxy": [0.59, 319.48, 562.74, 877.14]
+    }
+  ],
+  "result_id": "18a34c2f20ea44e2aa3c42e60bf11e2d",
+  "result_url": "/results/18a34c2f20ea44e2aa3c42e60bf11e2d",
+  "annotated_image_mime_type": "image/jpeg",
+  "annotated_image_base64": null
+}
+```
+
+`include_image_base64=false` is recommended because it keeps responses small. Use `result_url` to retrieve the annotated JPEG.
+
+## Smoke test
+
+Run the API in one terminal, then execute in a second terminal:
 
 ```bash
 cd /workspaces/warehouse_27june2026
@@ -52,63 +155,57 @@ python scripts/test_api.py GroundingDINO/.asset/cat_dog.jpeg \
   --output result.jpg
 ```
 
-The test prints JSON containing:
-
-```json
-{
-  "count": 2,
-  "device": "cpu",
-  "detections": [
-    {
-      "label": "cat",
-      "confidence": 0.0,
-      "box_xyxy": [0.0, 0.0, 0.0, 0.0]
-    }
-  ],
-  "annotated_image": "/workspaces/warehouse_27june2026/result.jpg"
-}
-```
-
-The values above illustrate the response structure; actual confidence scores and coordinates come from the uploaded image.
-
-## Direct API request
+When `API_KEY` is enabled:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/detect \
-  -F 'image=@GroundingDINO/.asset/cat_dog.jpeg' \
-  -F 'prompt=cat . dog .' \
-  -F 'box_threshold=0.35' \
-  -F 'text_threshold=0.25'
+python scripts/test_api.py GroundingDINO/.asset/cat_dog.jpeg \
+  --prompt "cat . dog ." \
+  --api-key 'your-secret' \
+  --output result.jpg
 ```
 
-## Warehouse prompts
+The script prints the totals and downloads the annotated result.
 
-Examples:
+## Suggested warehouse prompts
 
 ```text
 box . pallet . carton . bottle .
 forklift . worker . safety helmet .
 damaged box . open carton .
+wooden pallet . plastic pallet . cardboard box .
 ```
 
-## Configuration
+GroundingDINO is open-vocabulary, so prompt wording affects results. Keep object names short, concrete, and separated by dots.
 
-Optional environment variables:
+## Environment variables
 
-```text
-GROUNDING_DINO_ROOT
-GROUNDING_DINO_CONFIG
-GROUNDING_DINO_CHECKPOINT
-GROUNDING_DINO_DEVICE
-MAX_UPLOAD_BYTES
-HOST
-PORT
-```
+| Variable | Default | Meaning |
+|---|---:|---|
+| `API_KEY` | empty | Optional API authentication |
+| `APP_ENV` | `development` | Environment label |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8000` | API port |
+| `LOG_LEVEL` | `INFO` | Application log level |
+| `GROUNDING_DINO_DEVICE` | automatic | `cpu` or `cuda` |
+| `PRELOAD_MODEL` | `false` | Load the model during startup |
+| `MAX_UPLOAD_BYTES` | `15728640` | Maximum upload size |
+| `MAX_IMAGE_PIXELS` | `40000000` | Decompression-bomb limit |
+| `MAX_PROMPT_CHARS` | `500` | Prompt character limit |
+| `MAX_PROMPT_TERMS` | `30` | Maximum object terms |
+| `MAX_CONCURRENT_REQUESTS` | `1` | Requests admitted to inference |
+| `RESULT_DIR` | `runtime/results` | Saved result directory |
+| `RESULT_TTL_SECONDS` | `86400` | Result retention period |
+| `INCLUDE_BASE64_DEFAULT` | `false` | Embed images in JSON by default |
+| `PUBLIC_BASE_URL` | empty | Optional absolute public API URL |
+| `CORS_ORIGINS` | empty | Comma-separated allowed browser origins |
+| `ALLOWED_HOSTS` | `*` | Comma-separated trusted hosts |
+| `WEB_CONCURRENCY` | `1` | Uvicorn worker count |
 
-The default checkpoint is expected at:
+## Production notes
 
-```text
-GroundingDINO/weights/groundingdino_swint_ogc.pth
-```
-
-The first CPU request can take longer because the model is loaded lazily. Later requests reuse the loaded model.
+- Place the service behind HTTPS and a reverse proxy.
+- Set `API_KEY`, `APP_ENV=production`, and restrictive `ALLOWED_HOSTS`.
+- Keep one worker per loaded model unless the host has sufficient RAM or GPU memory.
+- Use persistent object storage instead of the local `runtime/results` directory when deploying multiple replicas.
+- Use an external gateway for distributed rate limiting.
+- Do not commit `.env`, checkpoint files, generated images, or the local GroundingDINO clone.
