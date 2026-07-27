@@ -1,9 +1,13 @@
 GroundingDINO/
 .venv/
+.env
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.env
-outputs/
-results/
+.mypy_cache/
+.ruff_cache/
+api.log
+api.pid
+result.jpg
+runtime/
 *.pth
