@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -37,19 +38,28 @@ from groundingdino.util.inference import annotate, load_image, load_model, predi
 
 
 class GroundingDinoService:
-    """Lazy-loaded GroundingDINO inference service."""
+    """Thread-safe, lazy-loaded GroundingDINO inference service."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_prompt_chars: int = 500, max_prompt_terms: int = 30) -> None:
         self.device = os.getenv(
             "GROUNDING_DINO_DEVICE",
             "cuda" if torch.cuda.is_available() else "cpu",
         )
+        self.max_prompt_chars = max_prompt_chars
+        self.max_prompt_terms = max_prompt_terms
         self._model = None
         self._model_lock = threading.Lock()
         self._inference_lock = threading.Lock()
 
-    @staticmethod
-    def normalize_prompt(prompt: str) -> str:
+    def normalize_prompt(self, prompt: str) -> str:
+        prompt = prompt.strip()
+        if not prompt:
+            raise ValueError("The prompt must contain at least one object name.")
+        if len(prompt) > self.max_prompt_chars:
+            raise ValueError(
+                f"The prompt exceeds the {self.max_prompt_chars}-character limit."
+            )
+
         terms = [
             term.strip()
             for term in prompt.replace(",", ".").split(".")
@@ -57,7 +67,13 @@ class GroundingDinoService:
         ]
         if not terms:
             raise ValueError("The prompt must contain at least one object name.")
-        return " . ".join(terms) + " ."
+        if len(terms) > self.max_prompt_terms:
+            raise ValueError(
+                f"The prompt exceeds the {self.max_prompt_terms}-term limit."
+            )
+
+        unique_terms = list(dict.fromkeys(terms))
+        return " . ".join(unique_terms) + " ."
 
     def status(self) -> dict[str, Any]:
         return {
@@ -97,7 +113,13 @@ class GroundingDinoService:
         prompt: str,
         box_threshold: float,
         text_threshold: float,
-    ) -> tuple[list[dict[str, Any]], bytes]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, int],
+        dict[str, float],
+        bytes,
+        str,
+    ]:
         normalized_prompt = self.normalize_prompt(prompt)
         model = self.get_model()
         image_source, image = load_image(str(image_path))
@@ -121,15 +143,27 @@ class GroundingDinoService:
         )
 
         detections: list[dict[str, Any]] = []
+        label_counts: Counter[str] = Counter()
+        confidence_totals: defaultdict[str, float] = defaultdict(float)
+
         for phrase, confidence, box in zip(phrases, logits, pixel_boxes):
+            label = phrase.strip().lower()
+            score = round(float(confidence), 4)
             x1, y1, x2, y2 = [round(float(value), 2) for value in box.tolist()]
             detections.append(
                 {
-                    "label": phrase,
-                    "confidence": round(float(confidence), 4),
+                    "label": label,
+                    "confidence": score,
                     "box_xyxy": [x1, y1, x2, y2],
                 }
             )
+            label_counts[label] += 1
+            confidence_totals[label] += score
+
+        average_confidence = {
+            label: round(confidence_totals[label] / count, 4)
+            for label, count in label_counts.items()
+        }
 
         annotated_frame = annotate(
             image_source=image_source,
@@ -141,4 +175,10 @@ class GroundingDinoService:
         if not encoded_ok:
             raise RuntimeError("Failed to encode the annotated image.")
 
-        return detections, encoded_image.tobytes()
+        return (
+            detections,
+            dict(label_counts),
+            average_confidence,
+            encoded_image.tobytes(),
+            normalized_prompt,
+        )
